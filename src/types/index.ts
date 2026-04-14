@@ -325,6 +325,7 @@ export interface Settings {
   useLocalSuccessBins?: boolean;  // 使用本地成功BIN池
   testModeLastBin?: string | null;  // 测试模式下上次使用的BIN（用于顺序遍历）
   seamlessSwitchEnabled?: boolean;  // 是否启用无感换号
+  windsurfClientType?: 'windsurf' | 'windsurf-next';  // 客户端类型
   windsurfPath?: string | null;  // Windsurf安装路径
   patchBackupPath?: string | null;  // 补丁备份文件路径
   autoOpenBrowser?: boolean;  // 是否自动打开浏览器
@@ -334,8 +335,9 @@ export interface Settings {
   proxyEnabled?: boolean;  // 是否启用代理
   proxyUrl?: string | null;  // 代理地址 (如 http://127.0.0.1:7890)
   useLightweightApi?: boolean;  // 使用轻量级API(GetPlanStatus)获取配额信息
-  subscriptionPlan?: number;  // 订阅计划: 1=Teams, 2=Pro
+  subscriptionPlan?: number;  // 订阅计划: 0=Free, 1=Teams, 2=Pro, 3=Enterprise SaaS, 4=Hybrid, 5=Enterprise Self-Hosted, 6=Waitlist Pro, 7=Teams Ultimate, 8=Pro Ultimate, 9=Trial, 10=Enterprise Self-Serve, 11=Enterprise SaaS Pooled, 12=Devin Enterprise, 14=Devin Teams, 15=Devin Teams V2, 16=Devin Pro, 17=Devin Max, 18=Max, 19=Devin Free, 20=Devin Trial
   paymentPeriod?: number;  // 支付周期: 1=月付, 2=年付
+  startTrial?: boolean;  // 是否以试用方式开始订阅
   teamName?: string;  // Teams 计划的团队名称
   seatCount?: number;  // Teams 计划的席位数量
 }

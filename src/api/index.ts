@@ -226,6 +226,7 @@ export const apiService = {
     id: string, 
     teamsTier?: number,
     paymentPeriod?: number,
+    startTrial?: boolean,
     teamName?: string,
     seatCount?: number,
     turnstileToken?: string
@@ -238,7 +239,7 @@ export const apiService = {
     error?: string;
     timestamp: string;
   }> {
-    return await invoke('get_trial_payment_link', { id, teamsTier, paymentPeriod, teamName, seatCount, turnstileToken });
+    return await invoke('get_trial_payment_link', { id, teamsTier, paymentPeriod, startTrial, teamName, seatCount, turnstileToken });
   },
 
   // === Protobuf解析API（返回解析后的结构化数据） ===
@@ -324,6 +325,8 @@ export const apiService = {
     message?: string;
     auth_token?: string;
     machine_id_reset?: boolean;
+    seamless_patch_active?: boolean;
+    auto_enabled_seamless?: boolean;
     error?: string;
   }> {
     return await invoke('switch_account', { id });

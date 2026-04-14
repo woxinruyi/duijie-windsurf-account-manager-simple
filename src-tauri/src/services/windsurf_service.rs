@@ -108,6 +108,7 @@ impl WindsurfService {
 
         // 根据订阅类型添加不同的后缀字节 (TeamsTier枚举值)
         match plan_type.to_lowercase().as_str() {
+            "free" => body.push(0x00),                     // 0 = TEAMS_TIER_UNSPECIFIED (Free)
             "teams" => body.push(0x01),                    // 1 = TEAMS_TIER_TEAMS
             "pro" => body.push(0x02),                      // 2 = TEAMS_TIER_PRO
             "enterprise_saas" => body.push(0x03),          // 3 = TEAMS_TIER_ENTERPRISE_SAAS
@@ -119,6 +120,14 @@ impl WindsurfService {
             "trial" => body.push(0x09),                    // 9 = TEAMS_TIER_TRIAL
             "enterprise_self_serve" => body.push(0x0a),    // 10 = TEAMS_TIER_ENTERPRISE_SELF_SERVE
             "enterprise_saas_pooled" => body.push(0x0b),   // 11 = TEAMS_TIER_ENTERPRISE_SAAS_POOLED
+            "devin_enterprise" => body.push(0x0c),         // 12 = TEAMS_TIER_DEVIN_ENTERPRISE
+            "devin_teams" => body.push(0x0e),              // 14 = TEAMS_TIER_DEVIN_TEAMS
+            "devin_teams_v2" => body.push(0x0f),           // 15 = TEAMS_TIER_DEVIN_TEAMS_V2
+            "devin_pro" => body.push(0x10),                // 16 = TEAMS_TIER_DEVIN_PRO
+            "devin_max" => body.push(0x11),                // 17 = TEAMS_TIER_DEVIN_MAX
+            "max" => body.push(0x12),                      // 18 = TEAMS_TIER_MAX
+            "devin_free" => body.push(0x13),               // 19 = TEAMS_TIER_DEVIN_FREE
+            "devin_trial" => body.push(0x14),              // 20 = TEAMS_TIER_DEVIN_TRIAL
             "enterprise" | _ => body.push(0x0a),           // 默认使用 ENTERPRISE_SELF_SERVE
         }
 
@@ -207,6 +216,7 @@ impl WindsurfService {
         cancel_url: &str, 
         teams_tier: i32,
         payment_period: i32,
+        start_trial: bool,
         team_name: Option<&str>,
         seats: Option<i32>,
         turnstile_token: Option<&str>
@@ -230,9 +240,11 @@ impl WindsurfService {
         body.push(len as u8);
         body.extend_from_slice(token_bytes);
 
-        // 字段3: start_trial = true (bool, field number 3, wire type 0)
-        body.push(0x18); // field 3, wire type 0 (0x18 = (3 << 3) | 0)
-        body.push(0x01); // value = true
+        // 字段3: start_trial (bool, field number 3, wire type 0)
+        if start_trial {
+            body.push(0x18); // field 3, wire type 0 (0x18 = (3 << 3) | 0)
+            body.push(0x01); // value = true
+        }
 
         // 字段4: Success URL (string, field number 4, wire type 2)
         body.push(0x22); // field 4, wire type 2 (0x22 = (4 << 3) | 2)
@@ -245,8 +257,8 @@ impl WindsurfService {
         body.extend_from_slice(cancel_url_bytes);
 
         // 字段6: seats (int64, field number 6, wire type 0)
-        // 只有 Teams/Enterprise 计划需要 seats，Pro 计划不能设置
-        if teams_tier == 1 || teams_tier == 3 {
+        // 所有团队/企业类计划需要 seats，个人计划(Pro/Max/Trial/Free等)不设置
+        if matches!(teams_tier, 1 | 3 | 4 | 5 | 7 | 10 | 11 | 12 | 14 | 15) {
             let seat_count = seats.unwrap_or(1);
             if seat_count > 0 {
                 body.push(0x30); // field 6, wire type 0 (0x30 = (6 << 3) | 0)
@@ -1127,6 +1139,7 @@ impl WindsurfService {
         token: &str, 
         teams_tier: i32,
         payment_period: i32,
+        start_trial: bool,
         team_name: Option<&str>,
         seats: Option<i32>,
         turnstile_token: Option<&str>
@@ -1134,8 +1147,8 @@ impl WindsurfService {
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/SubscribeToPlan", WINDSURF_BASE_URL);
 
         // 调试日志
-        println!("[SubscribeToPlan] teams_tier={}, payment_period={}, team_name={:?}, seats={:?}, has_turnstile={}", 
-            teams_tier, payment_period, team_name, seats, turnstile_token.is_some());
+        println!("[SubscribeToPlan] teams_tier={}, payment_period={}, start_trial={}, team_name={:?}, seats={:?}, has_turnstile={}", 
+            teams_tier, payment_period, start_trial, team_name, seats, turnstile_token.is_some());
 
         // 根据计划类型设置回调URL
         let plan_tier_str = if teams_tier == 1 { "teams" } else { "pro" };
@@ -1148,6 +1161,7 @@ impl WindsurfService {
             &cancel_url, 
             teams_tier,
             payment_period,
+            start_trial,
             team_name,
             seats,
             turnstile_token

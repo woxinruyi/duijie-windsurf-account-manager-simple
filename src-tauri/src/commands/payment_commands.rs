@@ -938,6 +938,7 @@ pub async fn get_trial_payment_link_enhanced(
     auto_open: bool,
     teams_tier: i32,
     payment_period: i32,
+    start_trial: bool,
     team_name: Option<String>,
     seat_count: Option<i32>,
     turnstile_token: Option<String>,
@@ -950,6 +951,7 @@ pub async fn get_trial_payment_link_enhanced(
         &token, 
         teams_tier,
         payment_period,
+        start_trial,
         team_name.as_deref(),
         seat_count,
         turnstile_token.as_deref()

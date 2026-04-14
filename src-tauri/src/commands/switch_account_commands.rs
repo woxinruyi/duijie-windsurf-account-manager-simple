@@ -1,3 +1,4 @@
+use crate::commands::patch_commands::{detect_windsurf_path_internal, apply_seamless_patch_internal};
 use crate::repository::DataStore;
 use crate::utils::errors::{AppError, AppResult};
 use chrono::Utc;
@@ -36,7 +37,6 @@ async fn refresh_access_token(refresh_token: &str) -> AppResult<GoogleTokenRespo
     
     // Google Token API
     let url = "https://securetoken.googleapis.com/v1/token";
-    let api_key = "AIzaSyBPFmef6bkwMJAYP0sJZAi4k5XP1lXJXuY"; // Firebase API Key
     
     let params = [
         ("grant_type", "refresh_token"),
@@ -44,9 +44,10 @@ async fn refresh_access_token(refresh_token: &str) -> AppResult<GoogleTokenRespo
     ];
     
     let response = client
-        .post(&format!("{}?key={}", url, api_key))
+        .post(&format!("{}?key={}", url, crate::services::auth_service::FIREBASE_API_KEY))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("X-Client-Version", "Chrome/JsCore/11.0.0/FirebaseCore-web")
+        .header("Origin", "https://windsurf.com")
         .header("Referer", "https://windsurf.com/")
         .form(&params)
         .send()
@@ -186,13 +187,23 @@ async fn get_auth_token(access_token: &str) -> AppResult<String> {
     Ok(auth_token)
 }
 
+/// 根据客户端类型获取 protocol URI scheme 和数据目录名
+fn get_client_uri_config(client_type: &str) -> (&'static str, &'static str) {
+    match client_type {
+        "windsurf-next" => ("windsurf-next", "Windsurf - Next"),
+        _ => ("windsurf", "Windsurf"),
+    }
+}
+
 /// 触发Windsurf回调URL以完成登录
-async fn trigger_windsurf_callback(auth_token: &str) -> AppResult<()> {
+async fn trigger_windsurf_callback(auth_token: &str, client_type: &str) -> AppResult<()> {
+    let (scheme, _) = get_client_uri_config(client_type);
+    
     // 生成state参数
     let state = Uuid::new_v4().to_string();
     
-    // 构建回调URL
-    // windsurf://codeium.windsurf#access_token=<auth_token>&state=<state>&token_type=Bearer
+    // 构建URL
+    // {scheme}://codeium.windsurf#access_token=<auth_token>&state=<state>&token_type=Bearer
     let params = [
         ("access_token", auth_token),
         ("state", &state),
@@ -202,7 +213,7 @@ async fn trigger_windsurf_callback(auth_token: &str) -> AppResult<()> {
     let fragment = serde_urlencoded::to_string(&params)
         .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
     
-    let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
+    let callback_url = format!("{}://codeium.windsurf#{}", scheme, fragment);
     
     info!("Triggering Windsurf callback: {}", callback_url);
     
@@ -319,9 +330,58 @@ pub async fn switch_account(
         }
     };
     
+    // 读取设置：客户端类型 + 无感换号状态
+    let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
+    let client_type = settings.windsurf_client_type.clone();
+    let mut seamless_patch_active = settings.seamless_switch_enabled;
+    let mut auto_enabled_seamless = false;
+    
+    // 如果无感换号未启用，尝试自动启用
+    if !seamless_patch_active {
+        info!("Seamless switch not enabled, attempting auto-enable...");
+        
+        // Step A: 检测或使用已有的客户端路径
+        let windsurf_path = settings.windsurf_path.as_ref()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .or_else(|| {
+                info!("No windsurf path configured, auto-detecting...");
+                match detect_windsurf_path_internal(&client_type) {
+                    Ok(path) => {
+                        info!("Auto-detected windsurf path: {}", path);
+                        Some(path)
+                    }
+                    Err(e) => {
+                        warn!("Failed to auto-detect windsurf path: {}", e);
+                        None
+                    }
+                }
+            });
+        
+        // Step B: 如果有路径，自动应用无感换号补丁
+        if let Some(ref path) = windsurf_path {
+            info!("Auto-applying seamless patch at: {}", path);
+            match apply_seamless_patch_internal(path, &data_store).await {
+                Ok(result) => {
+                    let success = result.get("success")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if success {
+                        seamless_patch_active = true;
+                        auto_enabled_seamless = true;
+                        info!("Seamless patch auto-applied successfully");
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to auto-apply seamless patch: {}", e);
+                }
+            }
+        }
+    }
+    
     // Step 3: 尝试重置机器ID（可能需要管理员权限）
     info!("Attempting to reset machine ID...");
-    let reset_result = reset_machine_id_internal().await;
+    let reset_result = reset_machine_id_internal(&client_type).await;
     let machine_id_reset = match reset_result {
         Ok(_) => {
             info!("Machine ID reset successful");
@@ -334,9 +394,9 @@ pub async fn switch_account(
         }
     };
     
-    // Step 4: 触发Windsurf回调URL以自动登录
-    info!("Triggering Windsurf callback...");
-    if let Err(e) = trigger_windsurf_callback(&auth_token).await {
+    // Step 4: 触发客户端回调URL以自动登录
+    info!("Triggering {} callback...", client_type);
+    if let Err(e) = trigger_windsurf_callback(&auth_token, &client_type).await {
         error!("Failed to trigger callback: {:?}", e);
         return Ok(json!({
             "success": false,
@@ -356,20 +416,38 @@ pub async fn switch_account(
     
     info!("Successfully triggered Windsurf login for account");
     
+    let (_, client_display) = get_client_uri_config(&client_type);
+    
+    let message = if auto_enabled_seamless {
+        if machine_id_reset {
+            format!("已自动启用无感换号并切换账号，{}已重启", client_display)
+        } else {
+            format!("已自动启用无感换号并切换账号，{}已重启（机器ID未重置）", client_display)
+        }
+    } else if seamless_patch_active {
+        if machine_id_reset {
+            format!("已通过无感换号切换账号并重置机器ID，{}无需重启", client_display)
+        } else {
+            format!("已通过无感换号切换账号，{}无需重启（机器ID未重置）", client_display)
+        }
+    } else if machine_id_reset {
+        format!("已触发{}登录并重置机器ID", client_display)
+    } else {
+        format!("已触发{}登录（未重置机器ID，可能需要管理员权限）", client_display)
+    };
+    
     Ok(json!({
         "success": true,
-        "message": if machine_id_reset {
-            "已成功触发Windsurf登录并重置机器ID"
-        } else {
-            "已成功触发Windsurf登录（未重置机器ID，可能需要管理员权限）"
-        },
+        "message": message,
         "auth_token": auth_token,
-        "machine_id_reset": machine_id_reset
+        "machine_id_reset": machine_id_reset,
+        "seamless_patch_active": seamless_patch_active,
+        "auto_enabled_seamless": auto_enabled_seamless
     }))
 }
 
 /// 内部重置机器ID函数
-async fn reset_machine_id_internal() -> AppResult<()> {
+async fn reset_machine_id_internal(client_type: &str) -> AppResult<()> {
     use std::fs;
     use rand::Rng;
     
@@ -390,10 +468,11 @@ async fn reset_machine_id_internal() -> AppResult<()> {
     let new_device_id = Uuid::new_v4().to_string().to_lowercase();
     
     // 更新storage.json
+    let (_, data_dir_name) = get_client_uri_config(client_type);
     let mut storage_path = directories::BaseDirs::new()
         .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("C:/Users/Default/AppData/Roaming"));
-    storage_path.push("Windsurf");
+    storage_path.push(data_dir_name);
     storage_path.push("User");
     storage_path.push("globalStorage");
     storage_path.push("storage.json");
@@ -459,11 +538,11 @@ async fn reset_machine_id_internal() -> AppResult<()> {
         // macOS 的硬件 UUID 无法修改，但可以尝试重置一些软件级别的标识
         // 注意：某些操作可能需要 sudo 权限
         
-        // 尝试删除 Windsurf 的本地缓存标识文件
+        // 尝试删除客户端的本地缓存标识文件
         let home = std::env::var("HOME").unwrap_or_default();
         let cache_paths = vec![
-            format!("{}/.config/Windsurf/machineid", home),
-            format!("{}/Library/Application Support/Windsurf/.installerId", home),
+            format!("{}/.config/{}/machineid", home, data_dir_name),
+            format!("{}/Library/Application Support/{}/.installerId", home, data_dir_name),
         ];
         
         for cache_path in cache_paths {
@@ -530,11 +609,11 @@ async fn reset_machine_id_internal() -> AppResult<()> {
             }
         }
         
-        // 尝试删除 Windsurf 的本地缓存标识文件
+        // 尝试删除客户端的本地缓存标识文件
         let home = std::env::var("HOME").unwrap_or_default();
         let cache_paths = vec![
-            format!("{}/.config/Windsurf/machineid", home),
-            format!("{}/.local/share/Windsurf/.installerId", home),
+            format!("{}/.config/{}/machineid", home, data_dir_name),
+            format!("{}/.local/share/{}/.installerId", home, data_dir_name),
         ];
         
         for cache_path in cache_paths {
@@ -554,8 +633,14 @@ async fn reset_machine_id_internal() -> AppResult<()> {
 
 /// 重置机器ID命令（供前端调用）
 #[tauri::command]
-pub async fn reset_machine_id() -> Result<Value, String> {
-    match reset_machine_id_internal().await {
+pub async fn reset_machine_id(
+    data_store: State<'_, Arc<DataStore>>,
+) -> Result<Value, String> {
+    let client_type = match data_store.get_settings().await {
+        Ok(s) => s.windsurf_client_type,
+        Err(_) => "windsurf".to_string(),
+    };
+    match reset_machine_id_internal(&client_type).await {
         Ok(()) => Ok(json!({
             "success": true,
             "message": "机器ID重置成功"

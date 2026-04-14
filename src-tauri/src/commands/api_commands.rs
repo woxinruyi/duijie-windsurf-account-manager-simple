@@ -1517,6 +1517,7 @@ pub async fn get_trial_payment_link(
     id: String,
     teams_tier: Option<i32>,
     payment_period: Option<i32>,
+    start_trial: Option<bool>,
     team_name: Option<String>,
     seat_count: Option<i32>,
     turnstile_token: Option<String>,
@@ -1537,6 +1538,7 @@ pub async fn get_trial_payment_link(
     // 默认值
     let final_teams_tier = teams_tier.unwrap_or(2); // 默认 Pro
     let final_payment_period = payment_period.unwrap_or(1); // 默认月付
+    let final_start_trial = start_trial.unwrap_or(true); // 默认开启试用
 
     // 调用Windsurf API获取支付链接
     let windsurf_service = WindsurfService::new();
@@ -1544,6 +1546,7 @@ pub async fn get_trial_payment_link(
         &token, 
         final_teams_tier,
         final_payment_period,
+        final_start_trial,
         team_name.as_deref(),
         seat_count,
         turnstile_token.as_deref()

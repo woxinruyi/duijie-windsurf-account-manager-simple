@@ -169,6 +169,7 @@ pub fn run() {
             commands::create_backup,
             commands::list_backups,
             commands::restore_backup,
+            commands::delete_backup,
             commands::export_data_to_file,
             commands::import_data_from_file,
             commands::get_data_directory,

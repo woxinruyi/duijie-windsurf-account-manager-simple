@@ -1242,8 +1242,8 @@ function handleGetTrialLink() {
   // 从设置中获取订阅计划类型
   const teamsTier = settingsStore.settings?.subscriptionPlan ?? 2; // 默认 Pro
   
-  // Pro 计划需要 Turnstile 验证，Teams 计划不需要
-  if (teamsTier === 2) {
+  // 个人计划(Pro/Pro Ultimate)需要 Turnstile 验证，团队/企业类计划不需要
+  if ([2, 8].includes(teamsTier)) {
     showTurnstileDialog.value = true;
   } else {
     // Teams 计划直接调用，不需要 Turnstile
@@ -1261,9 +1261,11 @@ async function handleTurnstileSuccess(turnstileToken: string) {
     // 从设置中读取订阅参数
     const teamsTier = settingsStore.settings?.subscriptionPlan ?? 2; // 默认 Pro
     const paymentPeriod = settingsStore.settings?.paymentPeriod ?? 1; // 默认月付
-    // Pro 计划不能设置团队名称，只有 Teams 才需要
-    const teamName = teamsTier === 1 ? (settingsStore.settings?.teamName || undefined) : undefined;
+    // 团队/企业类计划需要团队名称，个人计划不设置
+    const teamTiers = [1, 3, 4, 5, 7, 10, 11, 12, 14, 15];
+    const teamName = teamTiers.includes(teamsTier) ? (settingsStore.settings?.teamName || undefined) : undefined;
     const seatCount = settingsStore.settings?.seatCount ?? 1;
+    const startTrial = settingsStore.settings?.startTrial ?? true;
     
     // 检查是否启用了自动打开支付页面
     const autoOpen = settingsStore.settings?.autoOpenPaymentLinkInWebview || false;
@@ -1291,8 +1293,9 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         true, // 自动打开窗口
         teamsTier,
         paymentPeriod,
+        startTrial,
         teamName,
-        teamsTier === 1 ? seatCount : undefined, // Teams 需要席位
+        teamTiers.includes(teamsTier) ? seatCount : undefined, // 团队/企业类计划需要席位
         turnstileToken || undefined // Pro 需要 Turnstile token
       );
       
@@ -1354,8 +1357,9 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         props.account.id, 
         teamsTier,
         paymentPeriod,
+        startTrial,
         teamName,
-        teamsTier === 1 ? seatCount : undefined,
+        teamTiers.includes(teamsTier) ? seatCount : undefined,
         turnstileToken || undefined
       );
 
@@ -1489,15 +1493,22 @@ async function handleDeleteWindsurfUser() {
 }
 
 async function handleSwitchAccount() {
+  const isSeamless = settingsStore.settings?.seamlessSwitchEnabled === true;
+  const displayName = props.account.nickname || props.account.email;
+  
+  const confirmMessage = isSeamless
+    ? `确定要无感切换到账号 ${displayName} 吗？\n\n此操作将：\n• 自动登录并重置机器ID\n• 无需重启客户端\n• 保持当前工作状态`
+    : `确定要切换到账号 ${displayName} 吗？\n\n此操作将：\n• 自动检测客户端路径并启用无感换号\n• 自动登录并重置机器ID`;
+  
   isSwitching.value = true;
   try {
     await ElMessageBox.confirm(
-      `确定要切换到账号 ${props.account.nickname || props.account.email} 吗？\n\n此操作将：\n• 使用回调URL自动登录Windsurf\n• 无需重启软件\n• 保持当前工作状态`,
-      '切换账号确认',
+      confirmMessage,
+      isSeamless ? '无感切号' : '切换账号确认',
       {
         confirmButtonText: '确定切换',
         cancelButtonText: '取消',
-        type: 'warning',
+        type: 'info',
       }
     );
     
@@ -1505,29 +1516,38 @@ async function handleSwitchAccount() {
     const result = await apiService.switchAccount(props.account.id);
     
     if (result.success) {
-      // 显示成功消息
       ElMessage.success({
         message: result.message || '已成功切换账号',
         duration: 5000,
         showClose: true
       });
       
-      // 根据机器ID重置状态显示不同提示
-      if (result.machine_id_reset === false) {
-        ElMessage.warning({
-          message: '提示：机器ID未重置（可能需要管理员权限），但账号切换已成功',
-          duration: 6000,
+      // 自动启用了无感换号，同步前端设置状态
+      if (result.auto_enabled_seamless) {
+        await settingsStore.loadSettings();
+        ElMessage.info({
+          message: '已自动启用无感换号，后续切号将更加流畅',
+          duration: 5000,
           showClose: true
         });
       }
       
-      // 如果返回了auth_token，显示额外信息
-      if (result.auth_token) {
-        ElMessage.info({
-          message: '如果Windsurf未自动登录，请确保Windsurf已打开',
-          duration: 5000,
-          showClose: true
-        });
+      // 非无感模式下显示额外提示
+      if (!result.seamless_patch_active) {
+        if (result.machine_id_reset === false) {
+          ElMessage.warning({
+            message: '提示：机器ID未重置（可能需要管理员权限），但账号切换已成功',
+            duration: 6000,
+            showClose: true
+          });
+        }
+        if (result.auth_token) {
+          ElMessage.info({
+            message: '如果客户端未自动登录，请确保客户端已打开',
+            duration: 5000,
+            showClose: true
+          });
+        }
       }
       
       // 更新账号状态

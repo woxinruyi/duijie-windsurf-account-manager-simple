@@ -34,7 +34,7 @@
             class="group-item"
           >
             <div class="group-item-content">
-              <span @click="filterByGroup(group)" class="group-name">{{ group }}</span>
+              <span @click="filterByGroup(group)" class="group-name">{{ group }} <span class="group-count">({{ getGroupAccountCount(group) }})</span></span>
               <div class="group-actions" v-if="group !== '默认分组'">
                 <el-icon @click.stop="showRenameGroupDialog(group)" class="group-action-icon">
                   <Edit />
@@ -778,6 +778,10 @@ const sidebarWidth = computed(() => uiStore.sidebarCollapsed ? '64px' : '240px')
 function setActiveMenu(menu: string) {
   activeMenu.value = menu;
   accountsStore.clearFilter();
+}
+
+function getGroupAccountCount(group: string): number {
+  return accountsStore.accounts.filter(acc => acc.group === group).length;
 }
 
 function filterByGroup(group: string) {
@@ -2390,6 +2394,12 @@ onUnmounted(() => {
 .group-name {
   flex: 1;
   cursor: pointer;
+}
+
+.group-count {
+  font-size: 12px;
+  color: #909399;
+  font-weight: normal;
 }
 
 .group-actions {
