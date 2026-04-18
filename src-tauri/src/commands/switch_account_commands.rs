@@ -268,27 +268,76 @@ pub async fn switch_account(
         .await
         .map_err(|e| e.to_string())?;
     
-    // 检查是否有refresh_token
-    if account.refresh_token.is_none() || account.refresh_token.as_ref().unwrap().is_empty() {
-        return Ok(json!({
-            "success": false,
-            "error": "账号没有refresh_token，请先登录"
-        }));
-    }
-    
-    let refresh_token = account.refresh_token.unwrap();
-    
-    // Step 1: 检查本地token是否有效
-    let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&account.token, &account.token_expires_at) {
-        // 检查token是否还有至少5分钟有效期
-        let now = Utc::now();
-        let buffer = chrono::Duration::minutes(5);
-        if *expires_at > now + buffer {
-            info!("Using cached access token, expires at: {}", expires_at);
-            let remaining_seconds = (*expires_at - now).num_seconds();
-            (token.clone(), remaining_seconds.to_string())
+    // Step 1~2: 根据账号体系分流获取 access_token / auth_token
+    //
+    // - Firebase 账号：refresh_token → Google access_token → GetOneTimeAuthToken → one-time auth_token
+    // - Devin 账号：account.token (devin-session-token$...) 直接作为 GetOneTimeAuthToken 的 auth_token 入参；
+    //   由 AuthContext 自动附带 4 个 Devin 扩展 header 完成鉴权，无 Google OAuth 环节
+    let (access_token, expires_in, auth_token) = if account.is_devin_account() {
+        use crate::services::{AuthContext, WindsurfService};
+        info!("[Devin] Using session-token based one-time auth token flow");
+
+        let ctx = AuthContext::from_account(&account).map_err(|e| e.to_string())?;
+        let windsurf = WindsurfService::new();
+        let auth_token = match windsurf.get_one_time_auth_token(&ctx).await {
+            Ok(token) => {
+                info!("[Devin] Successfully obtained one-time auth token");
+                token
+            }
+            Err(e) => {
+                error!("[Devin] Failed to get one-time auth token: {:?}", e);
+                return Ok(json!({
+                    "success": false,
+                    "error": format!("获取auth_token失败: {}", e)
+                }));
+            }
+        };
+
+        // Devin session_token 对外层 update_account_token 仅作占位写入（值不变），
+        // expires_in 取 account 现有远期伪值，缺失则默认 30 天
+        let access_token = account.token.clone().unwrap_or_default();
+        let expires_in = account
+            .token_expires_at
+            .map(|t| (t - Utc::now()).num_seconds().max(0).to_string())
+            .unwrap_or_else(|| "2592000".to_string());
+        (access_token, expires_in, auth_token)
+    } else {
+        // Firebase 分支：必须有 refresh_token 才能换 Google access_token
+        if account.refresh_token.is_none() || account.refresh_token.as_ref().unwrap().is_empty() {
+            return Ok(json!({
+                "success": false,
+                "error": "账号没有refresh_token，请先登录"
+            }));
+        }
+
+        let refresh_token = account.refresh_token.clone().unwrap();
+
+        // Step 1: 检查本地token是否有效
+        let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&account.token, &account.token_expires_at) {
+            // 检查token是否还有至少5分钟有效期
+            let now = Utc::now();
+            let buffer = chrono::Duration::minutes(5);
+            if *expires_at > now + buffer {
+                info!("Using cached access token, expires at: {}", expires_at);
+                let remaining_seconds = (*expires_at - now).num_seconds();
+                (token.clone(), remaining_seconds.to_string())
+            } else {
+                info!("Token expired or expiring soon, refreshing...");
+                let token_response = match refresh_access_token(&refresh_token).await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        error!("Failed to refresh access token: {:?}", e);
+                        return Ok(json!({
+                            "success": false,
+                            "error": format!("获取access_token失败: {}", e)
+                        }));
+                    }
+                };
+                (token_response.access_token, token_response.expires_in)
+            }
         } else {
-            info!("Token expired or expiring soon, refreshing...");
+            // 没有本地token，需要刷新
+            info!("No cached token, refreshing access token...");
             let token_response = match refresh_access_token(&refresh_token).await {
                 Ok(resp) => resp,
                 Err(e) => {
@@ -300,34 +349,22 @@ pub async fn switch_account(
                 }
             };
             (token_response.access_token, token_response.expires_in)
-        }
-    } else {
-        // 没有本地token，需要刷新
-        info!("No cached token, refreshing access token...");
-        let token_response = match refresh_access_token(&refresh_token).await {
-            Ok(resp) => resp,
+        };
+
+        // Step 2: 获取auth_token
+        info!("Getting auth token...");
+        let auth_token = match get_auth_token(&access_token).await {
+            Ok(token) => token,
             Err(e) => {
-                error!("Failed to refresh access token: {:?}", e);
+                error!("Failed to get auth token: {:?}", e);
                 return Ok(json!({
                     "success": false,
-                    "error": format!("获取access_token失败: {}", e)
+                    "error": format!("获取auth_token失败: {}", e)
                 }));
             }
         };
-        (token_response.access_token, token_response.expires_in)
-    };
-    
-    // Step 2: 获取auth_token
-    info!("Getting auth token...");
-    let auth_token = match get_auth_token(&access_token).await {
-        Ok(token) => token,
-        Err(e) => {
-            error!("Failed to get auth token: {:?}", e);
-            return Ok(json!({
-                "success": false,
-                "error": format!("获取auth_token失败: {}", e)
-            }));
-        }
+
+        (access_token, expires_in, auth_token)
     };
     
     // 读取设置：客户端类型 + 无感换号状态

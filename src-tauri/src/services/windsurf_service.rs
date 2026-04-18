@@ -1,3 +1,4 @@
+use crate::services::auth_context::{AuthContext, AuthHeaderExt};
 use crate::utils::{AppError, AppResult};
 use base64::{Engine, engine::general_purpose};
 use reqwest;
@@ -284,7 +285,7 @@ impl WindsurfService {
         body.push(0x48); // field 9, wire type 0 (varint)
         body.push(payment_period as u8);
 
-        // 字段10: turnstile_token (string, field number 10, wire type 2) - Pro 需要
+        // 字段10: turnstile_token (string, field number 10, wire type 2) - start_trial=true 时所有计划均需
         if let Some(turnstile) = turnstile_token {
             let turnstile_bytes = turnstile.as_bytes();
             body.push(0x52); // field 10, wire type 2 (0x52 = (10 << 3) | 2)
@@ -300,7 +301,8 @@ impl WindsurfService {
         body
     }
 
-    pub async fn update_seats(&self, token: &str, seat_count: i32, retry_times: i32) -> AppResult<UpdateSeatsResult> {
+    pub async fn update_seats(&self, ctx: &AuthContext, seat_count: i32, retry_times: i32) -> AppResult<UpdateSeatsResult> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/UpdateSeats", WINDSURF_BASE_URL);
         
         let mut attempts = Vec::new();
@@ -325,6 +327,7 @@ impl WindsurfService {
                 .header("sec-fetch-dest", "empty")
                 .header("sec-fetch-mode", "cors")
                 .header("sec-fetch-site", "same-site")
+                .with_auth(ctx)
                 .header("x-debug-email", "")
                 .header("x-debug-team-name", "")
                 .header("Referer", "https://windsurf.com/")
@@ -417,7 +420,8 @@ impl WindsurfService {
         })
     }
 
-    pub async fn get_team_credit_entries(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_team_credit_entries(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamCreditEntries", WINDSURF_BASE_URL);
         
         // GetTeamCreditEntries的body格式: 0x0a + token长度 + token
@@ -461,7 +465,7 @@ impl WindsurfService {
             .header("sec-fetch-dest", "empty")
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
             .header("Referer", "https://windsurf.com/")
@@ -537,7 +541,8 @@ impl WindsurfService {
         }
     }
     
-    pub async fn get_team_billing(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_team_billing(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamBilling", WINDSURF_BASE_URL);
         
         // GetTeamBilling的body格式: 0x0a + token长度 + token
@@ -575,7 +580,7 @@ impl WindsurfService {
             .header("sec-fetch-dest", "empty")
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
             .header("Referer", "https://windsurf.com/")
@@ -631,7 +636,8 @@ impl WindsurfService {
     /// * `plan_type` - 计划类型（teams, pro, enterprise 等）
     /// * `payment_period` - 付款周期（1=月付, 2=年付）
     /// * `preview` - 预览模式（true=仅预览不实际执行）
-    pub async fn update_plan(&self, token: &str, plan_type: &str, payment_period: u8, preview: bool) -> AppResult<serde_json::Value> {
+    pub async fn update_plan(&self, ctx: &AuthContext, plan_type: &str, payment_period: u8, preview: bool) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/UpdatePlan", WINDSURF_BASE_URL);
         
         // 验证 payment_period
@@ -731,7 +737,8 @@ impl WindsurfService {
     ///
     /// # Returns
     /// 返回包含操作结果的 JSON 对象
-    pub async fn cancel_plan(&self, token: &str, reason: &str) -> AppResult<serde_json::Value> {
+    pub async fn cancel_plan(&self, ctx: &AuthContext, reason: &str) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/CancelPlan", WINDSURF_BASE_URL);
 
         println!("[CancelPlan] Canceling subscription with reason: {}", reason);
@@ -787,7 +794,8 @@ impl WindsurfService {
     ///
     /// # Returns
     /// 返回包含操作结果的 JSON 对象
-    pub async fn resume_plan(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn resume_plan(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/CancelPlan", WINDSURF_BASE_URL);
 
         println!("[ResumePlan] Resuming subscription");
@@ -835,7 +843,76 @@ impl WindsurfService {
         }))
     }
 
-    pub async fn get_current_user(&self, token: &str) -> AppResult<serde_json::Value> {
+    /// 获取一次性 auth_token（供 Windsurf 桌面客户端 OAuth 回调登录使用）
+    ///
+    /// # 背景
+    /// Windsurf 桌面客户端通过 `windsurf://codeium.windsurf#access_token=<one_time_auth_token>`
+    /// 触发登录，该一次性票据由后端 `GetOneTimeAuthToken` RPC 颁发。
+    ///
+    /// # 鉴权兼容性
+    /// - Firebase 账号：入参 `auth_token` = Firebase ID Token，请求仅需 `x-auth-token` 头
+    /// - Devin 账号：入参 `auth_token` = `devin-session-token$...` 形式的 session_token；
+    ///   请求还须附带 `X-Devin-Auth1-Token` / `X-Devin-Account-Id` /
+    ///   `X-Devin-Primary-Org-Id` / `X-Devin-Session-Token` 4 个扩展头
+    ///
+    /// `with_auth(ctx)` 会根据 `ctx.devin` 自动分流，调用方无需感知具体账号体系。
+    ///
+    /// # Returns
+    /// 成功时返回一次性 auth_token 字符串
+    pub async fn get_one_time_auth_token(&self, ctx: &AuthContext) -> AppResult<String> {
+        let token = ctx.token_str();
+        let url = format!(
+            "{}/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken",
+            WINDSURF_BASE_URL
+        );
+
+        // 请求体：GetOneTimeAuthTokenRequest { auth_token = 1 }
+        let body = self.encode_string_field(1, token);
+
+        let response = self.client
+            .post(&url)
+            .body(body)
+            .header("accept", "*/*")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .with_auth(ctx)
+            .header("Referer", "https://windsurf.com/")
+            .send()
+            .await
+            .map_err(|e| AppError::Api(e.to_string()))?;
+
+        let status_code = response.status().as_u16();
+        let response_body = response.bytes().await
+            .map_err(|e| AppError::Api(e.to_string()))?;
+
+        println!(
+            "[GetOneTimeAuthToken] Status: {}, Size: {} bytes",
+            status_code,
+            response_body.len()
+        );
+
+        if status_code != 200 {
+            let err_text = String::from_utf8_lossy(&response_body).to_string();
+            return Err(AppError::Api(format!(
+                "GetOneTimeAuthToken 请求失败: status={}, body={}",
+                status_code, err_text
+            )));
+        }
+
+        // 响应体：GetOneTimeAuthTokenResponse { auth_token = 1 }
+        let mut parser = super::proto_parser::ProtobufParser::new(response_body.to_vec());
+        let parsed = parser.parse_message()
+            .map_err(|e| AppError::Api(format!("解析 GetOneTimeAuthToken 响应失败: {}", e)))?;
+
+        let auth_token = parsed.get("string_1")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Api("GetOneTimeAuthToken 响应中未找到 auth_token 字段".to_string()))?;
+
+        Ok(auth_token.to_string())
+    }
+
+    pub async fn get_current_user(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetCurrentUser", WINDSURF_BASE_URL);
         
         // 构建请求体：0x0a + token长度(varint) + token + 0x10 0x01 0x18 0x01 0x20 0x01
@@ -873,7 +950,7 @@ impl WindsurfService {
             .header("sec-fetch-dest", "empty")
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
             .header("Referer", "https://windsurf.com/")
@@ -929,7 +1006,8 @@ impl WindsurfService {
 
     /// 获取套餐状态（积分/配额信息）
     /// 比 GetCurrentUser 更轻量，专门用于刷新积分状态
-    pub async fn get_plan_status(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_plan_status(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetPlanStatus", WINDSURF_BASE_URL);
         
         // 构建请求体：GetPlanStatusRequest { auth_token = 1 }
@@ -965,7 +1043,7 @@ impl WindsurfService {
             .header("sec-fetch-dest", "empty")
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
             .header("Referer", "https://windsurf.com/")
@@ -1018,7 +1096,8 @@ impl WindsurfService {
         }
     }
 
-    pub async fn reset_credits(&self, token: &str, seat_count: Option<i32>, last_seat_count: Option<i32>, seat_count_options: &[i32]) -> AppResult<serde_json::Value> {
+    pub async fn reset_credits(&self, ctx: &AuthContext, seat_count: Option<i32>, last_seat_count: Option<i32>, seat_count_options: &[i32]) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         // 确定使用的座位数
         let seat_count = if let Some(sc) = seat_count {
             sc
@@ -1043,7 +1122,7 @@ impl WindsurfService {
         println!("[ResetCredits] 使用座位数: {}", seat_count);
         
         // 执行一次座位更新即可触发积分重置
-        let seats_result = self.update_seats(token, seat_count, 1).await?;
+        let seats_result = self.update_seats(ctx, seat_count, 1).await?;
         
         // 直接返回座位更新的结果
         Ok(serde_json::json!({
@@ -1063,11 +1142,11 @@ impl WindsurfService {
 
     /// 重置团队成员的积分
     /// 通过移除成员再重新邀请来重置积分（与团队管理中的逻辑一致）
-    pub async fn reset_member_credits(&self, master_token: &str, member_api_key: &str, member_name: &str, member_email: &str) -> AppResult<serde_json::Value> {
+    pub async fn reset_member_credits(&self, master_ctx: &AuthContext, member_api_key: &str, member_name: &str, member_email: &str) -> AppResult<serde_json::Value> {
         println!("[ResetMemberCredits] 开始重置成员积分: {} ({})", member_name, member_email);
         
         // Step 1: 移除成员
-        let remove_result = self.remove_user_from_team(master_token, member_api_key).await;
+        let remove_result = self.remove_user_from_team(master_ctx, member_api_key).await;
         if let Err(e) = &remove_result {
             println!("[ResetMemberCredits] 移除成员失败: {}", e);
             return Ok(serde_json::json!({
@@ -1091,7 +1170,7 @@ impl WindsurfService {
         println!("[ResetMemberCredits] 成员已移除，开始重新邀请...");
         
         // Step 2: 重新邀请
-        let invite_result = self.grant_preapproval(master_token, vec![(member_name.to_string(), member_email.to_string())]).await;
+        let invite_result = self.grant_preapproval(master_ctx, vec![(member_name.to_string(), member_email.to_string())]).await;
         if let Err(e) = &invite_result {
             println!("[ResetMemberCredits] 重新邀请失败: {}", e);
             return Ok(serde_json::json!({
@@ -1130,13 +1209,13 @@ impl WindsurfService {
     /// * `payment_period` - 支付周期: 1=月付, 2=年付
     /// * `team_name` - 团队名称 (仅 Teams/Enterprise 需要)
     /// * `seats` - 席位数量 (仅 Teams/Enterprise 需要)
-    /// * `turnstile_token` - Turnstile 验证令牌 (Pro 需要)
+    /// * `turnstile_token` - Turnstile 验证令牌 (start_trial=true 时所有计划均必需)
     ///
     /// # Returns
     /// 返回包含Stripe Checkout链接的JSON对象
     pub async fn subscribe_to_plan(
         &self, 
-        token: &str, 
+        ctx: &AuthContext, 
         teams_tier: i32,
         payment_period: i32,
         start_trial: bool,
@@ -1144,6 +1223,7 @@ impl WindsurfService {
         seats: Option<i32>,
         turnstile_token: Option<&str>
     ) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/SubscribeToPlan", WINDSURF_BASE_URL);
 
         // 调试日志
@@ -1186,7 +1266,7 @@ impl WindsurfService {
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
             .header("authorization", format!("Bearer {}", token))
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
             .header("Referer", "https://windsurf.com/")
@@ -1266,7 +1346,8 @@ impl WindsurfService {
     }
 
     /// 获取团队配置
-    pub async fn get_team_config(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_team_config(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamConfigRecord", WINDSURF_BASE_URL);
 
         // 构建请求体 (field 1 = auth_token)
@@ -1331,7 +1412,8 @@ impl WindsurfService {
     }
 
     /// 更新团队配置
-    pub async fn update_team_config(&self, token: &str, config: serde_json::Value) -> AppResult<serde_json::Value> {
+    pub async fn update_team_config(&self, ctx: &AuthContext, config: serde_json::Value) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/UpdateTeamConfigExternal", WINDSURF_BASE_URL);
 
         // 构建请求体
@@ -1500,7 +1582,8 @@ impl WindsurfService {
     }
 
     /// 获取可用模型列表
-    pub async fn get_cascade_model_configs(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_cascade_model_configs(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.api_server_pb.ApiServerService/GetCascadeModelConfigsForSite", WINDSURF_BASE_URL);
 
         // 构建请求体 (field 6 = auth_token)
@@ -1570,7 +1653,8 @@ impl WindsurfService {
     }
 
     /// 获取 Command 模型列表
-    pub async fn get_command_model_configs(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_command_model_configs(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.api_server_pb.ApiServerService/GetCommandModelConfigsForSite", WINDSURF_BASE_URL);
 
         // 构建请求体 (field 1 = auth_token)
@@ -1639,7 +1723,8 @@ impl WindsurfService {
     }
 
     /// 获取团队模型控制配置
-    pub async fn get_team_organizational_controls(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_team_organizational_controls(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.api_server_pb.ApiServerService/GetTeamOrganizationalControlsForSite", WINDSURF_BASE_URL);
 
         // 构建请求体 (field 1 = auth_token)
@@ -1719,12 +1804,13 @@ impl WindsurfService {
     /// 更新团队模型控制配置
     pub async fn upsert_team_organizational_controls(
         &self, 
-        token: &str, 
+        ctx: &AuthContext, 
         team_id: &str,
         cascade_models: Vec<String>,
         command_models: Vec<String>,
         extension_models: Vec<String>,
     ) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         println!("[UpsertTeamOrgControls] team_id={}, cascade={:?}, command={:?}, extension={:?}", 
             team_id, cascade_models, command_models, extension_models);
         
@@ -1908,7 +1994,8 @@ impl WindsurfService {
 
     /// 删除用户 (DeleteUser API)
     /// DeleteUserRequest: auth_token=1, api_key=3
-    pub async fn delete_user(&self, token: &str, api_key: &str) -> AppResult<serde_json::Value> {
+    pub async fn delete_user(&self, ctx: &AuthContext, api_key: &str) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/DeleteUser", WINDSURF_BASE_URL);
 
         // 构造 protobuf 请求体
@@ -2016,7 +2103,8 @@ impl WindsurfService {
 
     /// 获取团队成员列表 (GetUsers API)
     /// 需要管理员权限
-    pub async fn get_team_members(&self, token: &str, group_id: Option<&str>) -> AppResult<serde_json::Value> {
+    pub async fn get_team_members(&self, ctx: &AuthContext, group_id: Option<&str>) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetUsers", WINDSURF_BASE_URL);
         
         let mut body = self.encode_string_field(1, token);
@@ -2035,7 +2123,7 @@ impl WindsurfService {
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
             .header("pragma", "no-cache")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2057,10 +2145,17 @@ impl WindsurfService {
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }))
         } else {
+            // 错误响应透明化：打印并回传原始响应体，方便定位权限/参数/认证问题
+            let raw_body_text = String::from_utf8_lossy(&response_body).to_string();
+            println!(
+                "[GetTeamMembers] 错误响应: status={}, body={}",
+                status_code, raw_body_text
+            );
             Ok(serde_json::json!({
                 "success": false,
                 "status_code": status_code,
                 "error": "获取团队成员失败",
+                "raw_response": raw_body_text,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }))
         }
@@ -2068,7 +2163,8 @@ impl WindsurfService {
 
     /// 邀请成员加入团队 (GrantPreapproval API)
     /// 需要管理员权限
-    pub async fn grant_preapproval(&self, token: &str, users: Vec<(String, String)>) -> AppResult<serde_json::Value> {
+    pub async fn grant_preapproval(&self, ctx: &AuthContext, users: Vec<(String, String)>) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GrantPreapproval", WINDSURF_BASE_URL);
         
         let mut body = self.encode_string_field(1, token);
@@ -2097,7 +2193,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2133,7 +2229,8 @@ impl WindsurfService {
 
     /// 从团队中移除成员 (RemoveUserFromTeam API)
     /// 需要管理员权限
-    pub async fn remove_user_from_team(&self, token: &str, api_key: &str) -> AppResult<serde_json::Value> {
+    pub async fn remove_user_from_team(&self, ctx: &AuthContext, api_key: &str) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/RemoveUserFromTeam", WINDSURF_BASE_URL);
         
         let mut body = self.encode_string_field(1, token);
@@ -2145,7 +2242,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2177,7 +2274,8 @@ impl WindsurfService {
 
     /// 撤销预审批邀请 (RevokePreapproval API)
     /// 需要管理员权限
-    pub async fn revoke_preapproval(&self, token: &str, approval_id: &str) -> AppResult<serde_json::Value> {
+    pub async fn revoke_preapproval(&self, ctx: &AuthContext, approval_id: &str) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/RevokePreapproval", WINDSURF_BASE_URL);
         
         let mut body = self.encode_string_field(1, token);
@@ -2189,7 +2287,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2221,7 +2319,8 @@ impl WindsurfService {
 
     /// 获取所有待处理的预审批邀请 (GetPreapprovals API)
     /// 需要管理员权限
-    pub async fn get_preapprovals(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_preapprovals(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetPreapprovals", WINDSURF_BASE_URL);
         
         let body = self.encode_string_field(1, token);
@@ -2232,7 +2331,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2273,7 +2372,8 @@ impl WindsurfService {
 
     /// 获取当前用户的待处理邀请 (GetPreapprovalForUser API)
     /// 普通用户权限
-    pub async fn get_preapproval_for_user(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_preapproval_for_user(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetPreapprovalForUser", WINDSURF_BASE_URL);
         
         let body = self.encode_string_field(1, token);
@@ -2284,7 +2384,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2334,7 +2434,8 @@ impl WindsurfService {
 
     /// 接受团队邀请 (AcceptPreapproval API)
     /// 普通用户权限
-    pub async fn accept_preapproval(&self, token: &str, approval_id: &str) -> AppResult<serde_json::Value> {
+    pub async fn accept_preapproval(&self, ctx: &AuthContext, approval_id: &str) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/AcceptPreapproval", WINDSURF_BASE_URL);
         
         let mut body = self.encode_string_field(1, token);
@@ -2346,7 +2447,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2378,7 +2479,8 @@ impl WindsurfService {
 
     /// 拒绝团队邀请 (RejectPreapproval API)
     /// 普通用户权限
-    pub async fn reject_preapproval(&self, token: &str, approval_id: &str) -> AppResult<serde_json::Value> {
+    pub async fn reject_preapproval(&self, ctx: &AuthContext, approval_id: &str) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/RejectPreapproval", WINDSURF_BASE_URL);
         
         let mut body = self.encode_string_field(1, token);
@@ -2390,7 +2492,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2478,7 +2580,8 @@ impl WindsurfService {
     /// 更新用户团队状态 (UpdateUserTeamStatus API)
     /// 管理员审批用户的加入申请
     /// status: 2=APPROVED(同意), 3=REJECTED(拒绝)
-    pub async fn update_user_team_status(&self, token: &str, user_api_key: &str, status: u8) -> AppResult<serde_json::Value> {
+    pub async fn update_user_team_status(&self, ctx: &AuthContext, user_api_key: &str, status: u8) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/UpdateUserTeamStatus", WINDSURF_BASE_URL);
         
         // 构建嵌套消息: { api_key: string, status: int }
@@ -2506,7 +2609,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2567,11 +2670,12 @@ impl WindsurfService {
     /// 需要管理员权限
     pub async fn update_credit_top_up_settings(
         &self,
-        token: &str,
+        ctx: &AuthContext,
         enabled: bool,
         monthly_top_up_amount: i32,
         top_up_increment: i32,
     ) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/UpdateCreditTopUpSettings", WINDSURF_BASE_URL);
         
         // 构建 protobuf 消息
@@ -2595,7 +2699,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2633,7 +2737,8 @@ impl WindsurfService {
     /// - int_2: enabled (1=启用)
     /// - int_3: monthly_top_up_amount (单位: 分/100)
     /// - int_5: top_up_increment (单位: 分)
-    pub async fn get_credit_top_up_settings(&self, token: &str) -> AppResult<serde_json::Value> {
+    pub async fn get_credit_top_up_settings(&self, ctx: &AuthContext) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetPlanStatus", WINDSURF_BASE_URL);
         
         // 构建请求体
@@ -2658,7 +2763,7 @@ impl WindsurfService {
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
             .header("pragma", "no-cache")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await?;
@@ -2727,7 +2832,8 @@ impl WindsurfService {
 
     /// 更新成员的 Windsurf 访问权限 (UpdateCodeiumAccess API)
     /// disable_access: true = 禁用访问, false = 启用访问
-    pub async fn update_codeium_access(&self, token: &str, api_key: &str, disable_access: bool) -> AppResult<serde_json::Value> {
+    pub async fn update_codeium_access(&self, ctx: &AuthContext, api_key: &str, disable_access: bool) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/UpdateCodeiumAccess", WINDSURF_BASE_URL);
         
         // 构建请求体：auth_token(1) + api_key(2) + disable_codeium_access(3)
@@ -2743,7 +2849,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2776,7 +2882,8 @@ impl WindsurfService {
 
     /// 添加用户角色 (AddUserRole API)
     /// role: 角色名称，如 "admin", "billing.admin" 等
-    pub async fn add_user_role(&self, token: &str, api_key: &str, role: &str, group_id: Option<&str>) -> AppResult<serde_json::Value> {
+    pub async fn add_user_role(&self, ctx: &AuthContext, api_key: &str, role: &str, group_id: Option<&str>) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/AddUserRole", WINDSURF_BASE_URL);
         
         // 构建请求体：auth_token(1) + api_key(2) + role(3) + group_id(4, optional)
@@ -2793,7 +2900,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await
@@ -2825,7 +2932,8 @@ impl WindsurfService {
     }
 
     /// 移除用户角色 (RemoveUserRole API)
-    pub async fn remove_user_role(&self, token: &str, api_key: &str, role: &str, group_id: Option<&str>) -> AppResult<serde_json::Value> {
+    pub async fn remove_user_role(&self, ctx: &AuthContext, api_key: &str, role: &str, group_id: Option<&str>) -> AppResult<serde_json::Value> {
+        let token = ctx.token_str();
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/RemoveUserRole", WINDSURF_BASE_URL);
         
         // 构建请求体：auth_token(1) + api_key(2) + role(3) + group_id(4, optional)
@@ -2842,7 +2950,7 @@ impl WindsurfService {
             .header("accept", "*/*")
             .header("connect-protocol-version", "1")
             .header("content-type", "application/proto")
-            .header("x-auth-token", token)
+            .with_auth(ctx)
             .header("Referer", "https://windsurf.com/")
             .send()
             .await

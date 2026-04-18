@@ -945,10 +945,13 @@ pub async fn get_trial_payment_link_enhanced(
 ) -> Result<serde_json::Value, String> {
     // 获取WindsurfService实例
     let service = crate::services::windsurf_service::WindsurfService::new();
-    
+
+    // 前端传入的 token 是 Firebase idToken（Devin 账号走独立的前端入口），这里构造 Firebase AuthContext
+    let ctx = crate::services::AuthContext::firebase(token.clone());
+
     // 调用subscribe_to_plan方法获取支付链接
     let result = service.subscribe_to_plan(
-        &token, 
+        &ctx, 
         teams_tier,
         payment_period,
         start_trial,

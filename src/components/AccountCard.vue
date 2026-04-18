@@ -27,6 +27,20 @@
         >
           {{ account.nickname }}
         </el-tag>
+        <el-tooltip
+          v-if="account.auth_provider === 'devin'"
+          content="通过 Devin Session 认证（新体系）"
+          placement="top"
+        >
+          <el-tag
+            type="success"
+            size="small"
+            effect="dark"
+            class="devin-tag"
+          >
+            Devin
+          </el-tag>
+        </el-tooltip>
       </div>
       <div class="status-indicator" :class="statusClass">
         <span class="status-dot"></span>
@@ -807,6 +821,11 @@ async function handleShowCreditHistory() {
 async function handleRefreshToken() {
   isRefreshing.value = true;
   try {
+    // 注：Devin 账号与 Firebase 账号统一走 apiService.refreshToken()，后端已按
+    // auth_provider 自动分流（Devin 走 auth1_token 换新 session_token + enrich，
+    // Firebase 走 refresh_token/sign_in），并统一响应 use_lightweight_api 设置、
+    // 写 OperationLog。无需在前端额外区分。
+
     // 检查Token是否过期
     const isTokenExpired = !props.account.token_expires_at || 
                           dayjs(props.account.token_expires_at).isBefore(dayjs());
@@ -1237,16 +1256,20 @@ function handleUpdatePlanSuccess() {
   accountsStore.refreshAccountToken(props.account);
 }
 
-// 获取试用绑卡链接 - 根据计划类型决定是否需要 Turnstile 验证
+// 获取试用绑卡链接 - 所有 trial 签约都需要 Turnstile 验证
+//
+// Windsurf 后端 `SubscribeToPlan` 对 `start_trial=true` 的所有计划（Pro/Max/Teams/Devin…）
+// 都强制 captcha 校验（错误码 `failed_precondition` + `captcha required for trial signup`）。
+// 早期只有 Pro 走 trial、代码里按 tier 分流弹 Turnstile 是历史遗留，现统一成：
+// - `startTrial=true` → 必须先过 Turnstile 拿 token 再请求
+// - `startTrial=false`（直接付费签约）→ 后端不要求 captcha，直接发请求
 function handleGetTrialLink() {
-  // 从设置中获取订阅计划类型
-  const teamsTier = settingsStore.settings?.subscriptionPlan ?? 2; // 默认 Pro
-  
-  // 个人计划(Pro/Pro Ultimate)需要 Turnstile 验证，团队/企业类计划不需要
-  if ([2, 8].includes(teamsTier)) {
+  const startTrial = settingsStore.settings?.startTrial ?? true;
+
+  if (startTrial) {
     showTurnstileDialog.value = true;
   } else {
-    // Teams 计划直接调用，不需要 Turnstile
+    // 直接付费签约，无需 captcha
     handleTurnstileSuccess('');
   }
 }
@@ -1296,7 +1319,7 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         startTrial,
         teamName,
         teamTiers.includes(teamsTier) ? seatCount : undefined, // 团队/企业类计划需要席位
-        turnstileToken || undefined // Pro 需要 Turnstile token
+        turnstileToken || undefined // trial 签约时所有计划均需 Turnstile token
       );
       
       if (result.success && result.window_opened) {
