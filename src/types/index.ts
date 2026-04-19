@@ -29,6 +29,11 @@ export interface AccountFilter {
   totalQuotaMax?: number;      // 总额度最大值
   expiryDaysMin?: number;      // 剩余天数最小值
   expiryDaysMax?: number;      // 剩余天数最大值
+  // 日/周配额剩余百分比筛选（0-100，仅 billing_strategy === 2 (QUOTA) 的账号参与）
+  dailyQuotaPercentMin?: number;   // 日配额剩余% 最小值
+  dailyQuotaPercentMax?: number;   // 日配额剩余% 最大值
+  weeklyQuotaPercentMin?: number;  // 周配额剩余% 最小值
+  weeklyQuotaPercentMax?: number;  // 周配额剩余% 最大值
   planNames?: string[];        // 套餐名称筛选
   domains?: string[];          // 域名筛选
   statuses?: AccountStatusType[];  // 状态筛选
@@ -53,7 +58,9 @@ export type SortField =
   | 'remaining_quota'     // 剩余积分
   | 'token_expires_at'    // Token过期时间
   | 'subscription_expires_at'  // 订阅到期时间
-  | 'plan_name';          // 套餐类型
+  | 'plan_name'           // 套餐类型
+  | 'daily_quota_remaining'    // 日配额剩余% (仅 billing_strategy=2(QUOTA) 有效)
+  | 'weekly_quota_remaining';  // 周配额剩余% (仅 billing_strategy=2(QUOTA) 有效)
 
 /**
  * 排序方向枚举
@@ -133,7 +140,18 @@ export interface WindsurfOrg {
 }
 
 /**
- * add_account_by_devin_login 的响应结构
+ * `devin_email_start` 的响应结构：发送邮箱验证码的底层接口
+ *
+ * 服务端向邮箱发送 6 位验证码，并回传 `email_verification_token`，供后续
+ * `/email/complete` 流程（登录 / 注册 / 忘记密码）作为会话凭证使用。
+ */
+export interface EmailStartResponse {
+  email_verification_token: string;
+  [key: string]: any;
+}
+
+/**
+ * add_account_by_devin_login / add_account_by_devin_email_login 的响应结构
  */
 export interface DevinLoginResult {
   success: boolean;

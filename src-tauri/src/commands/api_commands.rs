@@ -13,7 +13,11 @@ use uuid::Uuid;
 /// Devin 体系的 session_token 没有显式过期时间，但现有 token 缓存逻辑（`is_token_expired`）
 /// 依赖 `token_expires_at` 字段。此处只设置一个足够远的时间避免被错误认定为过期；真正
 /// 的过期判断依靠 401 错误触发 `force_refresh`。
-fn devin_session_pseudo_expires_at() -> chrono::DateTime<chrono::Utc> {
+///
+/// 暴露给 `devin_commands` 的建账路径（注册 / 邮件登录 / 账密登录 / session_token 迁入 /
+/// 多组织二次完成 / refresh_devin_session）统一使用，保证账号卡「到期时间」字段在初建
+/// 时就已填充，与刷新路径行为一致。
+pub(crate) fn devin_session_pseudo_expires_at() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now() + chrono::Duration::days(32)
 }
 

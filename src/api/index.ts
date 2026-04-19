@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig, DevinLoginResult, WindsurfOrg, CheckUserLoginMethodResult, LoginMethodSniffResult } from '@/types';
+import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig, DevinLoginResult, WindsurfOrg, CheckUserLoginMethodResult, LoginMethodSniffResult, EmailStartResponse } from '@/types';
 import type { AnalyticsData } from '@/types/analytics';
 
 // 账号管理API
@@ -635,6 +635,71 @@ export const devinApi = {
       tags: params.tags,
       group: params.group,
     });
+  },
+
+  // ========== 邮箱验证码（无密码登录） ==========
+
+  /**
+   * 发送邮箱验证码（底层接口）
+   *
+   * - `mode`：`"signup"` 或 `"login"`（无密码邮件登录），默认 `"login"`
+   * - `product`：默认 `"Windsurf"`；服务端对 `/email/start` 强制 literal 校验，
+   *   仅接受 `"Devin"` / `"Windsurf"`（首字母大写），传小写会返回 422。
+   *
+   * 服务端向邮箱发送 6 位验证码，并返回 `email_verification_token`，
+   * 供后续 `addAccountByEmailLogin` 回传使用。
+   */
+  async emailStart(
+    email: string,
+    mode: 'signup' | 'login' = 'login',
+    product: 'Windsurf' | 'Devin' = 'Windsurf'
+  ): Promise<EmailStartResponse> {
+    return await invoke('devin_email_start', { email, mode, product });
+  },
+
+  /**
+   * 完整流程：邮箱验证码注册新账号 + 建账号
+   *
+   * 前置：调用方已通过 `emailStart(email, "signup")` 拿到 `email_verification_token`，
+   * 并引导用户读取邮件中的 6 位验证码。
+   *
+   * 服务端 `mode=signup` 完成注册并返回新账号的 auth1_token，
+   * 多组织场景下返回 `requires_org_selection=true` + orgs，UI 需调 `addAccountWithOrg` 二次完成。
+   */
+  async addAccountByRegister(params: {
+    email: string;
+    emailVerificationToken: string;
+    code: string;
+    password: string;
+    name: string;
+    nickname?: string;
+    tags: string[];
+    group?: string;
+    orgId?: string;
+  }): Promise<DevinLoginResult> {
+    return await invoke('add_account_by_devin_register', params);
+  },
+
+  /**
+   * 完整流程：无密码邮件验证码登录 + 建账号
+   *
+   * 用于从 SSO 迁移且无密码、或忘记密码的已存在 Devin 账号。
+   * 前置：调用方已通过 `emailStart(email, "login")` 拿到 `email_verification_token`，
+   * 并引导用户读取邮件中的 6 位验证码。
+   *
+   * 服务端 `mode=login` 时**不会创建新账号**，仅返回已有账号的 auth1_token。
+   * 多组织场景下返回 `requires_org_selection=true` + orgs，UI 需调 `addAccountWithOrg` 二次完成。
+   */
+  async addAccountByEmailLogin(params: {
+    email: string;
+    emailVerificationToken: string;
+    code: string;
+    nickname?: string;
+    tags: string[];
+    group?: string;
+    orgId?: string;
+  }): Promise<DevinLoginResult> {
+    return await invoke('add_account_by_devin_email_login', params);
   },
 };
 

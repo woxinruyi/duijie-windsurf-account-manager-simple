@@ -22,7 +22,11 @@
           <template #title>账号管理</template>
         </el-menu-item>
         
-        <el-sub-menu index="groups">
+        <el-sub-menu
+          index="groups"
+          class="groups-submenu"
+          popper-class="groups-submenu-popper"
+        >
           <template #title>
             <el-icon><Folder /></el-icon>
             <span>分组管理</span>
@@ -45,7 +49,7 @@
               </div>
             </div>
           </el-menu-item>
-          <el-menu-item index="add-group" @click="showAddGroupDialog">
+          <el-menu-item index="add-group" class="group-add-action" @click="showAddGroupDialog">
             <el-icon><Plus /></el-icon>
             添加分组
           </el-menu-item>
@@ -129,6 +133,8 @@
             <el-option label="Token过期" value="token_expires_at" />
             <el-option label="订阅到期" value="subscription_expires_at" />
             <el-option label="套餐类型" value="plan_name" />
+            <el-option label="日配额剩余%" value="daily_quota_remaining" />
+            <el-option label="周配额剩余%" value="weekly_quota_remaining" />
           </el-select>
           <el-tooltip :content="sortDirection === 'asc' ? '升序' : '降序'" placement="bottom">
             <el-button
@@ -323,7 +329,26 @@
                   </div>
                 </div>
               </div>
-              <!-- 第二行：选择器筛选 -->
+              <!-- 第二行：日/周配额剩余百分比（仅 billing_strategy === 2 (QUOTA) 的账号参与） -->
+              <div class="filter-row">
+                <div class="filter-item filter-item-range">
+                  <span class="filter-label">日配额剩余%</span>
+                  <div class="filter-range">
+                    <el-input-number v-model="filterForm.dailyQuotaPercentMin" :min="0" :max="100" :controls="false" placeholder="最小" size="small" />
+                    <span class="range-separator">-</span>
+                    <el-input-number v-model="filterForm.dailyQuotaPercentMax" :min="0" :max="100" :controls="false" placeholder="最大" size="small" />
+                  </div>
+                </div>
+                <div class="filter-item filter-item-range">
+                  <span class="filter-label">周配额剩余%</span>
+                  <div class="filter-range">
+                    <el-input-number v-model="filterForm.weeklyQuotaPercentMin" :min="0" :max="100" :controls="false" placeholder="最小" size="small" />
+                    <span class="range-separator">-</span>
+                    <el-input-number v-model="filterForm.weeklyQuotaPercentMax" :min="0" :max="100" :controls="false" placeholder="最大" size="small" />
+                  </div>
+                </div>
+              </div>
+              <!-- 第三行：选择器筛选 -->
               <div class="filter-row filter-row-select">
                 <div class="filter-item filter-item-select">
                   <span class="filter-label">套餐</span>
@@ -750,6 +775,11 @@ const filterForm = ref({
   totalQuotaMax: undefined as number | undefined,
   expiryDaysMin: undefined as number | undefined,
   expiryDaysMax: undefined as number | undefined,
+  // 日/周配额剩余百分比（0-100，仅 billing_strategy === 2 (QUOTA) 账号参与）
+  dailyQuotaPercentMin: undefined as number | undefined,
+  dailyQuotaPercentMax: undefined as number | undefined,
+  weeklyQuotaPercentMin: undefined as number | undefined,
+  weeklyQuotaPercentMax: undefined as number | undefined,
   selectedTags: [] as string[],
   selectedPlans: [] as string[],
   selectedDomains: [] as string[],
@@ -766,6 +796,10 @@ const hasActiveFilter = computed(() => {
     f.totalQuotaMax !== undefined ||
     f.expiryDaysMin !== undefined ||
     f.expiryDaysMax !== undefined ||
+    f.dailyQuotaPercentMin !== undefined ||
+    f.dailyQuotaPercentMax !== undefined ||
+    f.weeklyQuotaPercentMin !== undefined ||
+    f.weeklyQuotaPercentMax !== undefined ||
     (f.tags && f.tags.length > 0) ||
     (f.planNames && f.planNames.length > 0) ||
     (f.domains && f.domains.length > 0) ||
@@ -802,6 +836,10 @@ function applyFilters() {
     totalQuotaMax: filterForm.value.totalQuotaMax,
     expiryDaysMin: filterForm.value.expiryDaysMin,
     expiryDaysMax: filterForm.value.expiryDaysMax,
+    dailyQuotaPercentMin: filterForm.value.dailyQuotaPercentMin,
+    dailyQuotaPercentMax: filterForm.value.dailyQuotaPercentMax,
+    weeklyQuotaPercentMin: filterForm.value.weeklyQuotaPercentMin,
+    weeklyQuotaPercentMax: filterForm.value.weeklyQuotaPercentMax,
     tags: filterForm.value.selectedTags.length > 0 ? filterForm.value.selectedTags : undefined,
     planNames: filterForm.value.selectedPlans.length > 0 ? filterForm.value.selectedPlans : undefined,
     domains: filterForm.value.selectedDomains.length > 0 ? filterForm.value.selectedDomains : undefined,
@@ -818,6 +856,10 @@ function clearAllFilters() {
     totalQuotaMax: undefined,
     expiryDaysMin: undefined,
     expiryDaysMax: undefined,
+    dailyQuotaPercentMin: undefined,
+    dailyQuotaPercentMax: undefined,
+    weeklyQuotaPercentMin: undefined,
+    weeklyQuotaPercentMax: undefined,
     selectedTags: [],
     selectedPlans: [],
     selectedDomains: [],
@@ -2891,4 +2933,92 @@ onUnmounted(() => {
   color: #a0aec0;
 }
 
+/* ==================== 分组管理子菜单：超出限高后局部滚动 ====================
+ * 背景：全局 `.sidebar :deep(::-webkit-scrollbar) { display: none !important; }` 强制隐藏
+ *   了侧边栏所有滚动条。当分组数量较多（如 > 8 个）时，el-sub-menu 展开
+ *   区会把下方其它菜单项顶出视口，用户无法访问亦无法滚动。
+ *
+ * 方案：只在 .groups-submenu 的展开容器（:deep(.el-menu)）上重新启用滚动：
+ *   1. 限制 max-height（约 8 项高度），超出则出现滚动条；
+ *   2. 用更高特异性 + !important 覆盖全局 scrollbar 隐藏规则，定制一条 6px 细滚动条；
+ *   3. "添加分组"按钮用 position: sticky 钉在底部，滚动时始终可见。
+ * 折叠态（collapse）下 sub-menu 是 popper 形式渲染在 <body> 下，不会命中本规则，无副作用。
+ */
+
+.sidebar-menu .groups-submenu :deep(.el-menu) {
+  max-height: 360px;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  scrollbar-width: thin !important;
+  -ms-overflow-style: auto !important;
+}
+
+.sidebar-menu .groups-submenu :deep(.el-menu)::-webkit-scrollbar {
+  display: block !important;
+  width: 6px !important;
+  background: transparent !important;
+}
+
+.sidebar-menu .groups-submenu :deep(.el-menu)::-webkit-scrollbar-thumb {
+  background-color: var(--el-border-color) !important;
+  border-radius: 3px !important;
+}
+
+.sidebar-menu .groups-submenu :deep(.el-menu)::-webkit-scrollbar-thumb:hover {
+  background-color: var(--el-border-color-darker) !important;
+}
+
+/* “添加分组”固定在展开区底部：滚动分组列表时该按钮始终可见 */
+.sidebar-menu .groups-submenu :deep(.group-add-action) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background-color: var(--el-menu-bg-color);
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+</style>
+
+<!--
+  折叠态 sub-menu 的 popper 被 Element Plus 通过 Teleport 渲染到 <body> 下，
+  已脱离本组件的 DOM 子树；scoped style 的 `:deep()` 无法穿透 Teleport，
+  因此折叠态的滚动样式必须放在下面这个“非 scoped”的 style 块里，
+  通过 popper-class="groups-submenu-popper" 精准锁定，避免污染全局。
+-->
+<style>
+/* ==================== 分组管理子菜单：折叠态 popper 浮层 ==================== */
+
+/* popper 的 ul.el-menu 限高并启用滚动；容器相对定位是为了让 sticky 的“添加分组”生效 */
+.groups-submenu-popper .el-menu {
+  max-height: 70vh;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  position: relative;
+  scrollbar-width: thin !important;
+  -ms-overflow-style: auto !important;
+}
+
+.groups-submenu-popper .el-menu::-webkit-scrollbar {
+  display: block !important;
+  width: 6px !important;
+  background: transparent !important;
+}
+
+.groups-submenu-popper .el-menu::-webkit-scrollbar-thumb {
+  background-color: var(--el-border-color) !important;
+  border-radius: 3px !important;
+}
+
+.groups-submenu-popper .el-menu::-webkit-scrollbar-thumb:hover {
+  background-color: var(--el-border-color-darker) !important;
+}
+
+/* “添加分组”按钮贴底：滚动分组列表时始终可见 */
+.groups-submenu-popper .el-menu .group-add-action {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background-color: var(--el-bg-color-overlay, var(--el-menu-bg-color));
+  border-top: 1px solid var(--el-border-color-lighter);
+}
 </style>

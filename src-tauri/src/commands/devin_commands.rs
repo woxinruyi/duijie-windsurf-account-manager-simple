@@ -8,6 +8,7 @@
 //! - `devin_select_org(account_id, org_id)` — 多组织场景下的二次选择
 //! - `refresh_devin_session(id)` — 用 auth1_token 重新换取 session_token
 
+use crate::commands::api_commands::devin_session_pseudo_expires_at;
 use crate::models::{Account, OperationLog, OperationStatus, OperationType};
 use crate::repository::DataStore;
 use crate::services::devin_auth_service::{
@@ -145,6 +146,7 @@ pub async fn add_account_by_devin_session_token(
     account.status = crate::models::account::AccountStatus::Active;
     account.last_login_at = Some(chrono::Utc::now());
     account.token = Some(token_trimmed.clone());
+    account.token_expires_at = Some(devin_session_pseudo_expires_at());
     account.auth_provider = Some("devin".to_string());
     // devin_account_id / devin_auth1_token / devin_primary_org_id 留空（仅 session_token 路径）
 
@@ -349,7 +351,9 @@ pub async fn add_account_by_devin_login(
     account.devin_account_id = login.account_id.clone();
     account.devin_primary_org_id = login.primary_org_id.clone();
     account.auth_provider = Some("devin".to_string());
-    // Devin session_token 不像 Firebase id_token 那样有显式过期时间，这里不设置 expires_at
+    // Devin session_token 本身没有显式过期时间，用 pseudo_expires_at（+32d）占位，
+    // 避免 `is_token_expired` 把新建账号误判为过期。真正过期判定靠 401 触发 force_refresh。
+    account.token_expires_at = Some(devin_session_pseudo_expires_at());
 
     // Step 4: 拉取用户详情（使用 session_token 作为 auth_token）
     enrich_account_with_user_info(&mut account, &login.session_token).await;
@@ -441,6 +445,8 @@ pub async fn add_account_by_devin_with_org(
     account.devin_account_id = post_auth.account_id.clone();
     account.devin_primary_org_id = post_auth.primary_org_id.clone().or(Some(org_id.clone()));
     account.auth_provider = Some("devin".to_string());
+    // 与 add_account_by_devin_login 一致：初建时填 pseudo_expires_at，保证账号卡「到期时间」立即可见
+    account.token_expires_at = Some(devin_session_pseudo_expires_at());
 
     enrich_account_with_user_info(&mut account, &post_auth.session_token).await;
 
@@ -633,6 +639,8 @@ pub async fn refresh_devin_session(
     }
     account.status = crate::models::account::AccountStatus::Active;
     account.last_login_at = Some(chrono::Utc::now());
+    // 刷新命令本身也要刷新 pseudo_expires_at，避免用户手动刷新后到期时间依然是旧值
+    account.token_expires_at = Some(devin_session_pseudo_expires_at());
 
     store
         .update_account(account.clone())
@@ -813,6 +821,8 @@ pub(crate) async fn persist_devin_account_from_login_result(
     account.devin_account_id = login.account_id.clone();
     account.devin_primary_org_id = login.primary_org_id.clone();
     account.auth_provider = Some("devin".to_string());
+    // 与其它建账路径一致：初建时填 pseudo_expires_at（+32d），与刷新路径行为对齐
+    account.token_expires_at = Some(devin_session_pseudo_expires_at());
 
     // 拉用户详情回填套餐、配额、api_key 等
     enrich_account_with_user_info(&mut account, &login.session_token).await;
