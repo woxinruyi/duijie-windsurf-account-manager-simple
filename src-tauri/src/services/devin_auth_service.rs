@@ -257,8 +257,10 @@ impl DevinAuthService {
     pub async fn check_connections(&self, email: &str) -> AppResult<ConnectionsResponse> {
         let url = format!("{}/connections", DEVIN_AUTH_BASE_URL);
 
+        // 服务端对 `product` 做字面值校验（只接受 "Devin" 或 "Windsurf"），
+        // 与网页端、`password_reset_start` 保持一致使用首字母大写，避免未来升级后返回 422。
         let body = ConnectionsRequest {
-            product: "windsurf".to_string(),
+            product: "Windsurf".to_string(),
             email: email.to_string(),
         };
 
@@ -616,7 +618,7 @@ impl DevinAuthService {
     ///
     /// - `mode == "signup"`：为新账号创建而发送验证码
     /// - `mode == "login"`：为无密码账号的邮件验证码登录而发送
-    /// - `product`：默认 `Some("windsurf")`（大小写与网页端一致）
+    /// - `product`：默认 `Some("Windsurf")`（大小写与网页端一致，服务端做字面值校验）
     ///
     /// 服务端会将 6 位数字验证码发至目标邮箱，并返回 `email_verification_token`，
     /// 供后续 `email_complete` 回传使用。

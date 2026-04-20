@@ -1377,6 +1377,17 @@ async fn refresh_token_internal_devin(
                 }
             }
         }
+        // 关键字段补拿：GetPlanStatus 不返回 windsurf_api_key / is_disabled /
+        // subscription_active，且 plan_end 对部分 Trial 账号可能缺失或为 0。
+        // 若任一关键字段仍为 None，补调一次 GetCurrentUser 回填，避免这些字段在
+        // 轻量级模式下永远拿不到（典型场景：新注册后从未单刷过的 Trial 账号）。
+        let needs_enrich = account.subscription_expires_at.is_none()
+            || account.windsurf_api_key.is_none()
+            || account.is_disabled.is_none()
+            || account.subscription_active.is_none();
+        if needs_enrich {
+            enrich_account_with_user_info(account, &new_token).await;
+        }
     } else {
         enrich_account_with_user_info(account, &new_token).await;
     }
@@ -1387,20 +1398,45 @@ async fn refresh_token_internal_devin(
         account.is_team_owner = Some(is_team_owner);
     }
 
+    // 批量刷新场景（save_immediately = false）也必须写入 store 内存，否则
+    // `batch_refresh_tokens` 末尾的 flush() 只会把旧数据再写一遍，Devin 账号的
+    // 刷新结果（token / 配额 / 到期时间 / 百分比 等）全部丢失，等同于未保存。
     if save_immediately {
         store
             .update_account(account.clone())
             .await
             .map_err(|e| e.to_string())?;
+    } else {
+        store
+            .update_account_no_save(account.clone())
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
+    // 返回完整字段（与 Firebase 分支 refresh_token_internal 对齐），
+    // 供 batch_refresh_tokens 前端合并逻辑同步 store 内存，避免 UI 需要 F5 才能看到新值。
+    // subscription_expires_at 以 Unix 秒输出，与前端 dayjs.unix() 合并逻辑匹配。
     Ok(json!({
         "success": true,
         "auth_provider": "devin",
         "message": "Devin 会话刷新成功",
+        "email": account.email,
+        "expires_at": account.token_expires_at.map(|t| t.to_rfc3339()),
         "plan_name": account.plan_name,
         "used_quota": account.used_quota,
         "total_quota": account.total_quota,
+        "windsurf_api_key": account.windsurf_api_key,
+        "is_disabled": account.is_disabled,
+        "is_team_owner": account.is_team_owner,
+        "subscription_expires_at": account.subscription_expires_at.map(|t| t.timestamp()),
+        "subscription_active": account.subscription_active,
+        "last_quota_update": account.last_quota_update.map(|t| t.to_rfc3339()),
+        "billing_strategy": account.billing_strategy,
+        "daily_quota_remaining_percent": account.daily_quota_remaining_percent,
+        "weekly_quota_remaining_percent": account.weekly_quota_remaining_percent,
+        "daily_quota_reset_at_unix": account.daily_quota_reset_at_unix,
+        "weekly_quota_reset_at_unix": account.weekly_quota_reset_at_unix,
+        "overage_balance_micros": account.overage_balance_micros,
     }))
 }
 

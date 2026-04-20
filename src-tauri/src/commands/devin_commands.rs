@@ -210,7 +210,8 @@ pub async fn sniff_login_method(email: String) -> Result<LoginMethodSniffResult,
 /// 发送邮箱验证码（注册 / 无密码登录 共用）
 ///
 /// - `mode`：`"signup"` 或 `"login"`，默认 `"signup"`
-/// - `product`：默认 `None` 时服务端同样返回验证码；显式传 `Some("windsurf")` 与网页端一致
+/// - `product`：默认 `None` 时服务端同样返回验证码；显式传 `Some("Windsurf")` 与网页端一致
+///   （服务端对该字段做字面值校验，只接受 `"Devin"` 或 `"Windsurf"`，传小写会 422）
 #[tauri::command]
 pub async fn devin_email_start(
     email: String,
