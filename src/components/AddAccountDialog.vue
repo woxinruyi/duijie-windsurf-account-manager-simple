@@ -471,7 +471,7 @@
 import { ref, reactive, computed, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { FormInstance, FormRules } from 'element-plus';
-import { Message, Lock, User, MagicStick, Refresh, Connection, Check } from '@element-plus/icons-vue';
+import { Message, Lock, User, MagicStick, Refresh, Connection, Check, Key } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, accountApi, devinApi } from '@/api';
 import type { WindsurfOrg, LoginMethodSniffResult } from '@/types';
