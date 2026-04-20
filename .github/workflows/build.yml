@@ -56,6 +56,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target x86_64-pc-windows-msvc
 
@@ -65,7 +67,9 @@ jobs:
           name: windows-x64
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.sig
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           if-no-files-found: ignore
 
   # Windows ARM64 构建
@@ -99,6 +103,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target aarch64-pc-windows-msvc
 
@@ -108,7 +114,9 @@ jobs:
           name: windows-arm64
           path: |
             src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi.sig
             src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           if-no-files-found: ignore
 
   # macOS x64 构建
@@ -142,6 +150,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target x86_64-apple-darwin
 
@@ -151,7 +161,8 @@ jobs:
           name: macos-x64
           path: |
             src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: ignore
 
   # macOS ARM64 构建
@@ -185,6 +196,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target aarch64-apple-darwin
 
@@ -194,7 +207,8 @@ jobs:
           name: macos-arm64
           path: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: ignore
 
   # Linux x64 构建
@@ -231,6 +245,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -240,6 +256,7 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
           if-no-files-found: ignore
 
   # Linux ARM64 构建
@@ -292,6 +309,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CC: aarch64-linux-gnu-gcc
           CXX: aarch64-linux-gnu-g++
           PKG_CONFIG_PATH: /usr/lib/aarch64-linux-gnu/pkgconfig
@@ -340,6 +359,64 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R artifacts
 
+      # 合并各平台 .sig 签名文件，生成统一的 latest.json 供 tauri-plugin-updater 消费。
+      # endpoint 指向 Releases latest 的 latest.json（见 tauri.conf.json plugins.updater.endpoints）。
+      - name: Generate latest.json for updater
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.get-version.outputs.version }}"
+          TAG="${{ needs.get-version.outputs.tag_name }}"
+          DL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          declare -A SIGS
+          declare -A URLS
+
+          collect() {
+            local key="$1"
+            local pattern="$2"
+            local match
+            match=$(ls $pattern 2>/dev/null | head -n 1 || true)
+            if [ -n "$match" ] && [ -f "$match" ]; then
+              local base
+              base=$(basename "$match" .sig)
+              SIGS[$key]="$(cat "$match")"
+              URLS[$key]="${DL}/${base}"
+              echo "  [$key] -> $base"
+            else
+              echo "  [$key] no sig found (pattern: $pattern)"
+            fi
+          }
+
+          echo "Collecting platform signatures..."
+          collect "windows-x86_64"  "artifacts/windows-x64/*.msi.sig"
+          collect "windows-aarch64" "artifacts/windows-arm64/*.msi.sig"
+          collect "darwin-x86_64"   "artifacts/macos-x64/*.app.tar.gz.sig"
+          collect "darwin-aarch64"  "artifacts/macos-arm64/*.app.tar.gz.sig"
+          collect "linux-x86_64"    "artifacts/linux-x64/*.AppImage.sig"
+
+          # 组装 platforms JSON
+          PLATFORMS="{}"
+          for key in "${!SIGS[@]}"; do
+            PLATFORMS=$(jq -n \
+              --argjson acc "$PLATFORMS" \
+              --arg k "$key" \
+              --arg sig "${SIGS[$key]}" \
+              --arg url "${URLS[$key]}" \
+              '$acc + {($k): {signature: $sig, url: $url}}')
+          done
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$PUB_DATE" \
+            --arg notes "See release notes on GitHub." \
+            --argjson platforms "$PLATFORMS" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' \
+            > latest.json
+
+          echo "Generated latest.json:"
+          cat latest.json
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -350,11 +427,16 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*.exe
+            artifacts/**/*.exe.sig
             artifacts/**/*.msi
+            artifacts/**/*.msi.sig
             artifacts/**/*.dmg
-            artifacts/**/*.app
+            artifacts/**/*.app.tar.gz
+            artifacts/**/*.app.tar.gz.sig
             artifacts/**/*.deb
             artifacts/**/*.rpm
             artifacts/**/*.AppImage
+            artifacts/**/*.AppImage.sig
+            latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

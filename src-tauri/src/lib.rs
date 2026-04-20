@@ -16,6 +16,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新能力（静默检查 + 下载 + 安装）：
+        // - endpoints / pubkey 在 tauri.conf.json 的 plugins.updater 中配置
+        // - 前端通过 @tauri-apps/plugin-updater 触发 check / downloadAndInstall
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 更新完成后需要调用 process.relaunch() 重启应用以加载新版本
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // 初始化数据存储
             let store = DataStore::new(app.handle())

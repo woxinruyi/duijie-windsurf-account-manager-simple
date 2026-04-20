@@ -439,8 +439,12 @@
       v-model="showAbout"
       :current-email="currentWindsurfEmail"
       :windsurf-version="windsurfVersion"
+      @open-update-dialog="showUpdateDialog = true"
     />
-    
+
+    <!-- 自动更新对话框 -->
+    <UpdateDialog v-model="showUpdateDialog" :current-version="appVersion" />
+
     <AutoResetDialog v-model="showAutoResetDialog" />
     
     <!-- 虚拟卡生成对话框 -->
@@ -630,6 +634,8 @@ import StatsDialog from '@/components/StatsDialog.vue';
 import BillingDialog from '@/components/BillingDialog.vue';
 import AccountInfoDialog from '@/components/AccountInfoDialog.vue';
 import AboutDialog from '@/components/AboutDialog.vue';
+import UpdateDialog from '@/components/UpdateDialog.vue';
+import { useUpdaterStore } from '@/store/modules/updater';
 import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
@@ -647,6 +653,8 @@ const currentWindsurfEmail = ref<string>('');
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
 const showAbout = ref(false);
+const showUpdateDialog = ref(false);
+const updaterStore = useUpdaterStore();
 const showTagManageDialog = ref(false);
 const showBatchImportDialog = ref(false);
 const batchImportDialogRef = ref<InstanceType<typeof BatchImportDialog> | null>(null);
@@ -2053,6 +2061,18 @@ onMounted(async () => {
   
   // 初始化自动重置定时器
   initAutoResetTimers();
+
+  // 启动静默检测更新（延迟 3 秒，避开启动高峰；store 内部 24h 防抖 + 跳过版本）
+  window.setTimeout(async () => {
+    try {
+      const hasUpdate = await updaterStore.checkUpdate(true);
+      if (hasUpdate) {
+        showUpdateDialog.value = true;
+      }
+    } catch (e) {
+      console.warn('[Updater] silent check failed:', e);
+    }
+  }, 3000);
 });
 
 // 组件卸载时清除自动重置定时器
